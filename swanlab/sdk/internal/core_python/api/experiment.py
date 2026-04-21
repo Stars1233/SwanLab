@@ -5,7 +5,7 @@
 @description: SwanLab 运行时实验API
 """
 
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -91,3 +91,12 @@ def stop_experiment(username: str, project: str, cuid: str, *, state: RunState, 
             "from": "sdk",
         },
     )
+
+
+def send_experiment_heartbeat(*, cuid: str, flag_id: str) -> None:
+    """
+    发送实验心跳，保持实验处于活跃状态
+    :param cuid: 实验唯一标识符
+    :param flag_id: 实验标记ID
+    """
+    client.post(f"/house/experiments/{cuid}/heartbeat", {"flagId": flag_id})

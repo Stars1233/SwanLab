@@ -1,7 +1,7 @@
 """
 @author: cunyue
 @file: experiment.py
-@time: 2026/4/18 17:43
+@time: 2026/3/10 19:02
 @description: SwanLab 运行时实验API类型
 """
 

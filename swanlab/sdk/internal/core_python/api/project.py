@@ -16,7 +16,7 @@ from swanlab.sdk.typings.core_python.api.project import InitProjectType, Project
 
 def get_project(*, username: str, name: str) -> ProjectType:
     """
-    获取项目信息
+    获取项目详情信息
     :param username: 项目所属的用户名
     :param name: 项目名称
     :return: 项目信息
