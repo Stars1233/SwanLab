@@ -6,6 +6,7 @@
 """
 
 import threading
+import time
 from typing import Callable, List, Optional
 
 from swanlab.proto.swanlab.record.v1.record_pb2 import Record
@@ -18,15 +19,16 @@ from .sender import HttpRecordSender
 
 class Transport:
     """
-    事件驱动的 Record Action 线程。
+    定时攒批的 Record Action 线程。
 
     用 Condition 驱动上传事件：
-    - put() 时 notify() 立刻唤醒线程，延迟接近 0
-    - wait(timeout=batch_interval) 保证最大攒批间隔
+    - put() 仅写入 buffer，不唤醒线程
+    - wait(timeout=batch_interval) 周期性唤醒线程，攒批后统一 drain
+    - finish() 时 notify_all() 立刻唤醒线程排空剩余 buffer
     - 清空 buffer 后在锁外委托 Dispatch，不阻塞生产者
     """
 
-    BATCH_INTERVAL: float = 1.0
+    BATCH_INTERVAL: float = 5.0
     FINISH_JOIN_TIMEOUT: int = 30
     THREAD_NAME: str = "SwanLab·Transport"
 
@@ -46,6 +48,7 @@ class Transport:
         self._started = False
         self._thread: Optional[threading.Thread] = None
         self._sender_closed = False
+        self._throttle = UploadWarningThrottle()
 
         # Transport 持有 sender，负责创建/注入/关闭
         self._sender = sender if sender is not None else HttpRecordSender()
@@ -66,15 +69,14 @@ class Transport:
         self._started = True
 
     def put(self, records: List[Record]) -> None:
-        """追加 records 到 buffer 并唤醒线程。"""
+        """追加 records 到 buffer，等待下次 batch_interval 唤醒时统一处理。"""
         if self._finished:
             console.warning("Transport has already been finished.")
             return
         if not records:
             return
         with self._cond:
-            if self._buf.extend(records) > 0:
-                self._cond.notify()
+            self._buf.extend(records)
 
     def finish(self) -> None:
         """
@@ -117,7 +119,6 @@ class Transport:
 
     def _loop(self) -> None:
         pending: List[Record] = []
-        network_warning_emitted = False
         try:
             while True:
                 with self._cond:
@@ -140,7 +141,7 @@ class Transport:
 
                 if is_success:
                     pending = []
-                    network_warning_emitted = False
+                    self._throttle.reset()
                     with self._cond:
                         if self._buf:
                             pending = self._buf.drain()
@@ -148,14 +149,38 @@ class Transport:
                             return
                 else:
                     pending = retry_records
-                    if not network_warning_emitted:
-                        console.warning("Upload failed, network seems unavailable.")
-                        network_warning_emitted = True
+                    self._throttle.warn()
                     with self._cond:
                         # 失败后退避等待；notify()/notify_all() 可提前唤醒，但不会丢掉 pending。
                         self._cond.wait(timeout=self._batch_interval)
         finally:
             self._close_sender()
+
+
+class UploadWarningThrottle:
+    """控制上传失败警告的打印频率，成功后重置并提示恢复。"""
+
+    INTERVAL: float = 30.0
+
+    def __init__(self) -> None:
+        # 用 -INTERVAL 而非 0.0，确保 time.monotonic() 返回值小于 INTERVAL 时
+        # （如 CI 容器刚启动）仍能首次触发 warn()
+        self._last_warn_at: float = -self.INTERVAL
+        self._in_failure: bool = False
+
+    def warn(self, message: str = "Upload failed due to network or server issues, retrying automatically.") -> None:
+        self._in_failure = True
+        now = time.monotonic()
+        if now - self._last_warn_at >= self.INTERVAL:
+            console.warning(message)
+            self._last_warn_at = now
+
+    def reset(self, message: str = "Upload recovered, resuming normally.") -> None:
+        if self._in_failure:
+            console.info(message)
+        # 同 __init__，用 -INTERVAL 保证 reset 后下次 warn() 立刻触发
+        self._last_warn_at = -self.INTERVAL
+        self._in_failure = False
 
 
 __all__ = [
