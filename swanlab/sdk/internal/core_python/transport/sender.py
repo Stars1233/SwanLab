@@ -27,7 +27,7 @@ from swanlab.sdk.internal.pkg import console, safe
 from swanlab.sdk.typings.core_python.api.upload import ConsoleMetric, ConsoleMetrics
 
 # stream 类型到日志级别的映射
-_STREAM_LEVEL_MAP: dict[int, Literal["INFO", "ERROR", "WARN"]] = {
+_STREAM_LEVEL_MAP: dict[int, Literal["INFO", "ERROR"]] = {
     StreamType.STREAM_TYPE_STDOUT: "INFO",
     StreamType.STREAM_TYPE_STDERR: "ERROR",
 }
@@ -48,7 +48,8 @@ class HttpRecordSender:
         self._experiment_id = experiment_id
         self._upload_handlers: dict[str, Callable[[Sequence[Record]], None]] = {
             "column": self.upload_column,
-            "data": self.upload_data,
+            "scalar": self.upload_scalar,
+            "media": self.upload_media,
             "config": self.upload_config,
             "console": self.upload_console,
             "metadata": self.upload_metadata,
@@ -72,8 +73,11 @@ class HttpRecordSender:
     def upload_column(self, records: Sequence[Record]) -> None:
         console.debug("HTTP upload skeleton: upload_column (request mapping pending).")
 
-    def upload_data(self, records: Sequence[Record]) -> None:
-        console.debug("HTTP upload skeleton: upload_data (request mapping pending).")
+    def upload_scalar(self, records: Sequence[Record]) -> None:
+        console.debug("HTTP upload skeleton: upload_scalar (request mapping pending).")
+
+    def upload_media(self, records: Sequence[Record]) -> None:
+        console.debug("HTTP upload skeleton: upload_media (request mapping pending).")
 
     def upload_console(self, records: Sequence[Record]) -> None:
         console_records = [r.console for r in records if r.HasField("console")]

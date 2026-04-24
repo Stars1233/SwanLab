@@ -9,7 +9,7 @@ from pathlib import Path
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
-from swanlab.proto.swanlab.metric.data.v1.media.text_pb2 import TextItem
+from swanlab.proto.swanlab.metric.data.v1.data_pb2 import MediaItem
 from swanlab.sdk.internal.run.transforms.text import Text
 
 
@@ -39,13 +39,27 @@ class TestTextTransform:
         assert outer.caption == "inner caption"
 
     def test_text_transform(self, tmp_path: Path):
-        """transform 将内容正确写入文件，caption 写入 TextItem"""
+        """transform 将内容正确写入文件，caption 写入 MediaItem"""
         text = Text(content="Sample text for testing", caption="Test caption")
         result = text.transform(step=42, path=tmp_path)
 
-        assert isinstance(result, TextItem)
+        assert isinstance(result, MediaItem)
         assert result.caption == "Test caption"
         assert (tmp_path / result.filename).read_text(encoding="utf-8") == "Sample text for testing"
+
+    def test_text_transform_sha256_correct(self, tmp_path: Path):
+        """MediaItem.sha256 与内容一致"""
+        import hashlib
+
+        text = Text(content="hello world")
+        result = text.transform(step=1, path=tmp_path)
+        assert result.sha256 == hashlib.sha256(b"hello world").hexdigest()
+
+    def test_text_transform_size_correct(self, tmp_path: Path):
+        """MediaItem.size 与内容字节数一致"""
+        text = Text(content="hello world")
+        result = text.transform(step=1, path=tmp_path)
+        assert result.size == len(b"hello world")
 
     def test_text_transform_nested_content_written(self, tmp_path: Path):
         """套娃时，落盘内容为内层解包后的 content"""
@@ -63,8 +77,8 @@ class TestTextTransform:
         timestamp = Timestamp(seconds=1234567890)
 
         items = [
-            TextItem(filename="file1.txt", caption="caption1"),
-            TextItem(filename="file2.txt", caption="caption2"),
+            MediaItem(filename="file1.txt", caption="caption1"),
+            MediaItem(filename="file2.txt", caption="caption2"),
         ]
 
         record = Text.build_data_record(key=key, step=step, timestamp=timestamp, data=items)
@@ -72,8 +86,8 @@ class TestTextTransform:
         assert record.key == key
         assert record.step == step
         assert record.timestamp == timestamp
-        assert len(record.texts.items) == 2
-        assert record.texts.items[0].filename == "file1.txt"
-        assert record.texts.items[0].caption == "caption1"
-        assert record.texts.items[1].filename == "file2.txt"
-        assert record.texts.items[1].caption == "caption2"
+        assert len(record.value.items) == 2
+        assert record.value.items[0].filename == "file1.txt"
+        assert record.value.items[0].caption == "caption1"
+        assert record.value.items[1].filename == "file2.txt"
+        assert record.value.items[1].caption == "caption2"
