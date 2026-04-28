@@ -22,9 +22,10 @@ from typing import Any, Callable, Literal, Mapping, Optional, Type, Union, cast,
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from swanlab.proto.swanlab.run.v1.run_pb2 import FinishRecord
-from swanlab.sdk.internal.bus import MetricLogEvent, ScalarDefineEvent
+from swanlab.sdk.internal.bus import MetricLogEvent
 from swanlab.sdk.internal.context import RunContext
-from swanlab.sdk.internal.pkg import adapter, console, fork, safe
+from swanlab.sdk.internal.pkg import adapter, console, fork, helper, safe
+from swanlab.sdk.internal.run import greeting
 from swanlab.sdk.internal.run.components import Components
 from swanlab.sdk.internal.run.components.config import Config
 from swanlab.sdk.internal.run.transforms import Audio, Image, Text, Video, normalize_media_input
@@ -101,9 +102,11 @@ class Run:
         >>> swanlab.finish()
     """
 
-    def __init__(self, ctx: RunContext):
+    def __init__(self, ctx: RunContext, path: Optional[str] = None):
         # 1. 基础状态、组件准备
         self._ctx = ctx
+        # 运行实验路径，/:username/:project_name/:run_id
+        self._path = path
         self._state: Union[FinishType, Literal["running"]] = "running"
         self._init_pid = fork.current_pid()
         # 外部API锁，防止并发调用
@@ -129,10 +132,18 @@ class Run:
         signal.signal(signal.SIGINT, self._handle_sigint)
 
         # 3. 启动组件 + 初始化日志
-        self._callbacker.on_run_initialized(self._ctx.run_dir, self.path)
+        # 回调的path在path为空的时候自动生成一个/:project_name/:run_id，否则使用path
+        run_settings = ctx.config.settings
+        assert run_settings.project.name, "project name is required when init run"
+        assert run_settings.run.id, "run id is required when init run"
+        self._callbacker.on_run_initialized(
+            self._ctx.run_dir, path or f"/{run_settings.project.name}/{run_settings.run.id}"
+        )
+        # 启动组件
         self._components.start()
         self._probe.start()
         console.init(bind_to=self._ctx.debug_dir if self.mode != "disabled" else None)
+        greeting.welcome(self._ctx, self)
 
     # ----------------------------------
     # 私有钩子
@@ -228,23 +239,30 @@ class Run:
     @cached_property
     def path(self) -> str:
         """
-        Current run path in the format of /:project/:run_id.
+        Current run path in the format of /:username/:project_name/:run_id.
 
         :return: Run path
         """
-        settings = self._ctx.config.settings
-        return f"/{settings.project.name}/runs/{settings.run.id}"
+        if not self._path:
+            raise ValueError(
+                "Run path is unavailable because the current run is not using SwanLab cloud mode. "
+                "Please initialize SwanLab with cloud mode to access the run path."
+            )
+        return self._path
 
     @cached_property
-    def url(self) -> Optional[str]:
+    def url(self) -> str:
         """
         Current run URL if in cloud mode, otherwise None.
         :return: Run URL or None
         """
+        if not self._path:
+            raise ValueError(
+                "Run url is unavailable because the current run is not using SwanLab cloud mode. "
+                "Please initialize SwanLab with cloud mode to access the run path."
+            )
         settings = self._ctx.config.settings
-        if settings.mode != "cloud":
-            return None
-        return f"{settings.web_host}/@{settings.project.workspace}{self.path}"
+        return f"{settings.web_host}{helper.fmt_run_path(self._path)}"
 
     @cached_property
     def config(self) -> Config:
@@ -520,38 +538,40 @@ class Run:
         :param x_axis: Optional x-axis type for the column.
         :param chart_name: Optional chart name to group the column into.
         """
+        raise NotImplementedError("run.define_scalar() is not available yet. Support is planned for a future release.")
+
         # TODO: 实现 glob 匹配逻辑
-        if not (this_key := fmt.safe_validate_key(key)):
-            return console.error(
-                f"Invalid key for define scalar: {key}, please use valid characters (alphanumeric, '.', '-', '/') and avoid special characters."
-            )
-
-        original_name = name
-        if name and not (name := fmt.safe_validate_name(name)):
-            return console.error(f"Invalid name for define scalar: {original_name}, must be a string.")
-
-        original_color = color
-        if color and not (color := fmt.safe_validate_color(color)):
-            return console.error(f"Invalid color for define scalar: {original_color}, must be a hex color code.")
-
-        if (this_x_axis := fmt.safe_validate_x_axis(x_axis)) is None:
-            return console.error(f"Invalid x_axis for define scalar: {x_axis}, must be a valid ScalarXAxisType.")
-
-        original_chart_name = chart_name
-        if chart_name and not (chart_name := fmt.safe_validate_chart_name(chart_name)):
-            return console.error(f"Invalid chart_name for define scalar: {original_chart_name}, must be a string.")
-
-        self._components.emitter.emit(
-            ScalarDefineEvent(
-                key=this_key,
-                name=name,
-                color=color,
-                system=False,
-                x_axis=this_x_axis,
-                chart_name=chart_name,
-                chart=None,
-            )
-        )
+        # if not (this_key := fmt.safe_validate_key(key)):
+        #     return console.error(
+        #         f"Invalid key for define scalar: {key}, please use valid characters (alphanumeric, '.', '-', '/') and avoid special characters."
+        #     )
+        #
+        # original_name = name
+        # if name and not (name := fmt.safe_validate_name(name)):
+        #     return console.error(f"Invalid name for define scalar: {original_name}, must be a string.")
+        #
+        # original_color = color
+        # if color and not (color := fmt.safe_validate_color(color)):
+        #     return console.error(f"Invalid color for define scalar: {original_color}, must be a hex color code.")
+        #
+        # if (this_x_axis := fmt.safe_validate_x_axis(x_axis)) is None:
+        #     return console.error(f"Invalid x_axis for define scalar: {x_axis}, must be a valid ScalarXAxisType.")
+        #
+        # original_chart_name = chart_name
+        # if chart_name and not (chart_name := fmt.safe_validate_chart_name(chart_name)):
+        #     return console.error(f"Invalid chart_name for define scalar: {original_chart_name}, must be a string.")
+        #
+        # self._components.emitter.emit(
+        #     ScalarDefineEvent(
+        #         key=this_key,
+        #         name=name,
+        #         color=color,
+        #         system=False,
+        #         x_axis=this_x_axis,
+        #         chart_name=chart_name,
+        #         chart=None,
+        #     )
+        # )
 
     @with_api("run.finish()", must_alive=False)
     def finish(
@@ -577,6 +597,7 @@ class Run:
         if state == "crashed" and error is None:
             console.warning("Crashed reason has been set to 'unknown' due to missing error message.")
             error = "unknown"
+        greeting.goodbye(self._ctx, self)
         # 2. 运行结束，清理组件
         self._state = this_state
         # 停止所有内部组件（async_log → terminal → config → consumer）

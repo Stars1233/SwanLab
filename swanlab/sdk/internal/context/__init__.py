@@ -92,7 +92,7 @@ class RunContext:
         return self.config.run_dir / f"run-{run_id}.swanlab"
 
 
-# ContextVar 现在只存这个轻量级的数据宿主
+# 运行上下文
 _current_ctx: ContextVar[Optional[RunContext]] = ContextVar("swanlab_run_ctx", default=None)
 
 
