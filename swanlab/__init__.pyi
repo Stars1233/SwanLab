@@ -13,6 +13,7 @@ from . import utils
 from .api import Api
 from .sdk import Audio, Callback, ECharts, Image, Molecule, Object3D, Run, Settings, Text, Video, config, echarts, plot
 from .sdk.typings.cmd import ConfigLike, LoginType
+from .sdk.typings.context import CallbacksType
 from .sdk.typings.run import AsyncLogType, FinishType, ModeType, ResumeType
 from .sdk.typings.run.column import ScalarXAxisType
 from .sdk.typings.run.transforms import CaptionsType
@@ -28,6 +29,7 @@ __version__: str
 
 __all__ = [
     # cmd
+    "merge_callbacks",
     "merge_settings",
     "init",
     "finish",
@@ -87,7 +89,7 @@ def init(
     resume: Optional[Union[ResumeType, bool]] = None,
     config: Optional[ConfigLike] = None,
     settings: Optional[Settings] = None,
-    callbacks: Optional[List[Callback]] = None,
+    callbacks: Optional[CallbacksType] = None,
     **kwargs: Any,
 ) -> Run:
     """Initialize a new SwanLab run to track experiments.
@@ -226,6 +228,30 @@ def merge_settings(settings: Union[Settings, dict]) -> None:
 
         >>> import swanlab
         >>> swanlab.merge_settings({"mode": "local", "logdir": "./my_logs"})
+        >>> swanlab.init()
+    """
+    ...
+
+def merge_callbacks(callbacks: CallbacksType) -> None:
+    """Merge custom callbacks into the global SwanLab callback registry.
+
+    This function allows you to register callbacks before initializing a run.
+    It must be called before `swanlab.init()`.
+
+    :param callbacks: Custom callbacks to merge. Can be a single Callback object or an iterable of Callback objects.
+    :raises RuntimeError: If called while a run is active.
+
+    Examples:
+
+        >>> import swanlab
+        >>> from swanlab import Callback
+        >>> class MyCallback(Callback):
+        ...     @property
+        ...     def name(self) -> str:
+        ...         return "my_callback"
+        ...     def on_run_initialized(self, run_dir, path):
+        ...         print("Run initialized!")
+        >>> swanlab.merge_callbacks(MyCallback())
         >>> swanlab.init()
     """
     ...

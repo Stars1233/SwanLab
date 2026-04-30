@@ -14,15 +14,15 @@ from typing import Generator, Optional
 
 from swanlab.sdk.internal.context.components.probe import create_probe
 from swanlab.sdk.internal.settings import Settings
+from swanlab.sdk.typings.context import CallbacksType
 
-from .components import CallbackManager, callbacker, create_callback_manager, create_core
+from .components import CallbackManager, create_callback_manager, create_core
 from .metrics import MediaMetric, RunMetrics, ScalarMetric
 from .transformer import TransformData, TransformMedia
 
 __all__ = [
     # value
     "use_context",
-    "callbacker",
     # class
     "RunContext",
     "RunConfig",
@@ -44,11 +44,9 @@ class RunConfig:
 
 # 上下文宿主
 class RunContext:
-    def __init__(self, config: RunConfig):
+    def __init__(self, config: RunConfig, callbacks: Optional[CallbacksType] = None):
         self.config: RunConfig = config
-        self.callbacker = create_callback_manager()
-        # 使用 callbacker.registered_callbacks 作为初始回调集合
-        self.callbacker.merge_callbacks(callbacker.registered_callbacks)
+        self.callbacker = create_callback_manager(callbacks=callbacks)
         self.metrics: RunMetrics = RunMetrics()
         self.core = create_core(self)
         self.probe = create_probe(self)

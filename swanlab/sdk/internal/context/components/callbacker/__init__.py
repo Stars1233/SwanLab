@@ -5,10 +5,11 @@
 @description: SwanLab 回调模块
 """
 
-from typing import TYPE_CHECKING, Dict, Iterable, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from swanlab.sdk.internal.pkg import console, safe
 from swanlab.sdk.protocol import Callback
+from swanlab.sdk.typings.context import CallbacksType
 
 
 class _CallbackManager:
@@ -18,13 +19,17 @@ class _CallbackManager:
     """
 
     def __init__(self):
-        # 使用字典保证顺序并天然去重
+        """
+        初始化回调管理器
+        """
         self._callbacks: Dict[str, Callback] = {}
 
-    def merge_callbacks(self, callbacks: Iterable[Callback]) -> None:
+    def merge_callbacks(self, callbacks: Optional[CallbacksType]) -> None:
         """批量合并回调函数到当前管理器中"""
-        if not callbacks:
+        if callbacks is None:
             return
+        if isinstance(callbacks, Callback):
+            callbacks = [callbacks]
 
         for cb in callbacks:
             if not isinstance(cb, Callback):
@@ -68,6 +73,9 @@ class _CallbackManager:
         raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
+# 全局 CallBacker，主要用处是存储全局注册的回调函数
+global_callbacker = _CallbackManager()
+
 # =========================================================================
 # IDE 类型欺骗 (Type Hinting Magic)
 # 这一段代码在真实运行时根本不会被执行，它完全是写给 PyCharm/VSCode 看的
@@ -79,15 +87,19 @@ if TYPE_CHECKING:
         def name(self) -> str:
             return "FakeCallback"
 
-    callbacker: CallbackManager
 else:
     CallbackManager = _CallbackManager
-    # 全局 CallBacker
-    callbacker = CallbackManager()
 
 
-def create_callback_manager() -> CallbackManager:
-    return CallbackManager()
+def create_callback_manager(callbacks: Optional[CallbacksType]) -> CallbackManager:
+    """
+    创建一个新的回调管理器，继承全局回调的同时，支持注入局部回调（当前run有效的回调）
+    优先级是局部回调大于全局回调
+    """
+    cm = CallbackManager()
+    cm.merge_callbacks(global_callbacker.registered_callbacks)
+    cm.merge_callbacks(callbacks)
+    return cm
 
 
-__all__ = ["callbacker", "CallbackManager", "create_callback_manager"]
+__all__ = ["CallbackManager", "global_callbacker", "create_callback_manager"]
