@@ -6,6 +6,7 @@
 """
 
 import subprocess
+import sys
 from typing import Optional
 
 from swanlab.sdk.internal.pkg import safe
@@ -32,9 +33,9 @@ def get() -> str:
     if result and result.returncode == 0:
         return result.stdout
 
-    # 尝试 pip
-    result = _try_run(["pip", "list", "--format=freeze"], timeout=15, check=True)
-    if result:
+    # 尝试当前 Python 环境中的 pip
+    result = _try_run([sys.executable, "-m", "pip", "list", "--format=freeze"], timeout=15)
+    if result and result.returncode == 0:
         return result.stdout
 
     raise ValueError("Failed to get environment requirements")

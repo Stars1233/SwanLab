@@ -5,7 +5,8 @@
 @description: Tests for requirements information collection
 """
 
-from subprocess import CalledProcessError, TimeoutExpired
+import sys
+from subprocess import TimeoutExpired
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,8 +60,9 @@ class TestRequirementsGet:
         assert mock_run.call_count == 3
         # 验证 pip 参数
         third_call = mock_run.call_args_list[2]
-        assert third_call[0][0] == ["pip", "list", "--format=freeze"]
+        assert third_call[0][0] == [sys.executable, "-m", "pip", "list", "--format=freeze"]
         assert third_call.kwargs.get("timeout") == 15
+        assert third_call.kwargs.get("check") is False
 
     @pytest.mark.parametrize(
         "side_effects",
@@ -68,7 +70,7 @@ class TestRequirementsGet:
             [
                 MagicMock(returncode=1, stdout=""),
                 MagicMock(returncode=1, stdout=""),
-                CalledProcessError(1, "pip"),
+                MagicMock(returncode=1, stdout=""),
             ],
         ],
     )
