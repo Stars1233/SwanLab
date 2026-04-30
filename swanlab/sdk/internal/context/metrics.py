@@ -7,11 +7,13 @@
 
 import math
 import sys
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Any, Dict, Optional, Set, Union
 
 from swanlab.proto.swanlab.metric.column.v1.column_pb2 import ColumnRecord, ColumnType
+from swanlab.proto.swanlab.metric.data.v1.data_pb2 import ScalarRecord
 from swanlab.sdk.internal.pkg import console
 
 # 开启 slots 可以减少内存占用，提高性能，但是仅适用于 Python 3.10 及以上版本
@@ -19,11 +21,42 @@ from swanlab.sdk.internal.pkg import console
 DATACLASS_KWARGS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
+@dataclass(**DATACLASS_KWARGS)
+class BaseMetric(ABC):
+    _column: ColumnRecord
+    steps: Set[int] = field(default_factory=set, init=False)
+
+    @property
+    def type(self) -> ColumnType:
+        return self._column.column_type
+
+    def ensure_type_match(self, metric_type: ColumnType):
+        if self.type != metric_type:
+            raise TypeError(
+                f"Metric '{self._column.column_key}' has already been defined as "
+                f"{ColumnType.Name(self.type)}, not {ColumnType.Name(metric_type)}."
+            )
+
+    def check_and_mark_logged(self, step: int) -> bool:
+        """
+        确保step已经被记录，如果已经记录则返回True，否则返回False
+        引入此方法是实现 https://github.com/SwanHubX/SwanLab/issues/1576 的前置条件
+        我们需要等待后端准备好
+        :param step: 步数
+        :return: 是否已经记录
+        """
+        if step in self.steps:
+            return True
+        self.steps.add(step)
+        return False
+
+    @abstractmethod
+    def update(self, data_record: Any): ...
+
+
 # 使用解包的方式传入参数
 @dataclass(**DATACLASS_KWARGS)
-class ScalarMetric:
-    # 指标列记录
-    _column: ColumnRecord
+class ScalarMetric(BaseMetric):
     # 指标最新值
     latest: Optional[Union[float, int]] = None
     # 指标的最大值
@@ -31,42 +64,42 @@ class ScalarMetric:
     # 指标的最小值
     min: Optional[Union[float, int]] = None
 
-    def update(self, value: Union[float, int]) -> bool:
+    def update(self, data_record: ScalarRecord):
         """
         更新标量指标值
-        :param value: 标量指标值
-        :return: 是否成功更新
+        :param data_record: 标量指标记录
         """
-        self.latest = value
-        if self.max is None or value > self.max:
-            self.max = value
-        if self.min is None or value < self.min:
-            self.min = value
-        return True
-
-    @property
-    def type(self):
-        return self._column.column_type
+        value = data_record.value.number
+        # 1. 如果为有效值，则更新
+        if math.isfinite(value):
+            self.latest = value
+            if self.max is None or value > self.max:
+                self.max = value
+            if self.min is None or value < self.min:
+                self.min = value
+            return
+        # 2. 如果为无效值，则忽略
+        key = self._column.column_key
+        console.debug(f"Invalid scalar value: {value} for metric '{key}', ignored when updating.")
 
 
 @dataclass(**DATACLASS_KWARGS)
-class MediaMetric:
-    # 指标列记录
-    _column: ColumnRecord
+class MediaMetric(BaseMetric):
     # 媒体存储路径，绝对路径
     path: Path
 
-    @property
-    def type(self):
-        return self._column.column_type
+    def update(self, data_record: Any):
+        """
+        更新媒体指标值，媒体指标目前没什么可更新的，因此直接pass
+        """
+        pass
 
 
 # 指标状态，实验运行过程中不断更新
 # 注意：此类不加锁保护。设计上对 RunMetrics 的写操作发生在以下线程：
 #   - next_step: 用户主线程（通过 Run.log，已在 with_api 锁内串行化）
 #   - next_system_step: Monitor Timer 线程（独立递增 system_step，与 next_step 互不干扰）
-#   - update_scalar: Consumer 线程（单线程消费队列，与 define_scalar/define_media 串行）
-#   - define_scalar/define_media: Consumer 线程（同上）
+#   - define_scalar/define_media: Consumer 线程（单线程消费队列，串行）
 # 如果未来引入多线程并发写入此对象，需要重新评估线程安全。
 @dataclass
 class RunMetrics:
@@ -93,34 +126,18 @@ class RunMetrics:
         self._global_step += 1
         return self._global_step
 
-    def update_scalar(self, key: str, value: Union[float, int]):
-        """
-        更新标量指标状态
-        :param key: 指标键
-        :param value: 标量值
-        """
-        scalar = self._metrics.get(key)
-        assert scalar is not None, f"Metric '{key}' does not exist."
-        assert isinstance(scalar, ScalarMetric), f"Metric '{key}' is not a scalar metric."
-        if math.isnan(value) or math.isinf(value):
-            console.debug(f"Invalid scalar value: {value} for metric '{key}', ignored when updating.")
-            return
-        scalar.latest = value
-        if scalar.max is None or value > scalar.max:
-            scalar.max = value
-        if scalar.min is None or value < scalar.min:
-            scalar.min = value
-
-    def define_scalar(self, key: str, column: ColumnRecord):
+    def define_scalar(self, *, key: str, column: ColumnRecord) -> ScalarMetric:
         """
         定义一个标量指标
         :param key: 指标键
         :param column: 指标列记录
         """
         assert key not in self._metrics, f"Metric '{key}' already exists."
-        self._metrics[key] = ScalarMetric(_column=column)
+        scalar_metric = ScalarMetric(_column=column)
+        self._metrics[key] = scalar_metric
+        return scalar_metric
 
-    def define_media(self, key: str, column: ColumnRecord, path: Path):
+    def define_media(self, *, key: str, column: ColumnRecord, path: Path) -> MediaMetric:
         """
         定义媒体指标
         :param key: 指标键
@@ -128,26 +145,14 @@ class RunMetrics:
         :param path: 媒体存储路径，绝对路径
         """
         assert key not in self._metrics, f"Metric '{key}' already exists."
-        self._metrics[key] = MediaMetric(_column=column, path=path)
+        media_metric = MediaMetric(_column=column, path=path)
+        self._metrics[key] = media_metric
+        return media_metric
 
-    def ensure_defined_as(self, key: str, metric_type: ColumnType) -> bool:
+    def get(self, key: str) -> Optional[Union[ScalarMetric, MediaMetric]]:
         """
-        判断指标是否已定义，并确保其类型与预期一致。
-
+        根据key获取指标
         :param key: 指标键
-        :param metric_type: 期望的指标类型
-        :return:
-            - False: 指标尚未定义
-            - True: 指标已定义且类型一致
-        :raise TypeError: 指标已定义但类型不匹配
+        :return: 指标对象，如果不存在则返回None
         """
-        if key not in self._metrics:
-            return False
-
-        metric = self._metrics[key]
-        if metric.type != metric_type:
-            raise TypeError(
-                f"Metric '{key}' has already been defined as "
-                f"{ColumnType.Name(metric.type)}, not {ColumnType.Name(metric_type)}."
-            )
-        return True
+        return self._metrics.get(key)
