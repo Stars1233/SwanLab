@@ -148,9 +148,9 @@ class Run:
         run_settings = ctx.config.settings
         assert run_settings.project.name, "project name is required when init run"
         assert run_settings.run.id, "run id is required when init run"
-        self._callbacker.on_run_initialized(
-            self._ctx.run_dir, path or f"/{run_settings.project.name}/{run_settings.run.id}"
-        )
+        run_path = path or f"/{run_settings.project.name}/{run_settings.run.id}"
+        callback_settings = run_settings.model_copy(deep=True)
+        self._callbacker.on_run_initialized(self._ctx.run_dir, run_path, settings=callback_settings)
         # 启动组件
         self._components.start()
         self._probe.start()
@@ -661,6 +661,8 @@ class Run:
         self._components.stop(async_log_timeout=async_log_timeout)
         # 停止probe
         self._probe.finish()
+        # 通知回调
+        self._callbacker.on_run_finished(state=this_state, error=error)
         ts = Timestamp()
         ts.GetCurrentTime()
         # 3. 停止Core线程
