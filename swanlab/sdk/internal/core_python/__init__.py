@@ -41,6 +41,7 @@ from swanlab.sdk.internal.core_python.api.experiment import (
     stop_experiment,
 )
 from swanlab.sdk.internal.core_python.api.project import get_or_create_project, get_project
+from swanlab.sdk.internal.core_python.heartbeat import Heartbeat
 from swanlab.sdk.internal.core_python.metrics import RunMetrics
 from swanlab.sdk.internal.core_python.pkg.counter import Counter
 from swanlab.sdk.internal.core_python.store import DataStoreWriter
@@ -77,6 +78,7 @@ class CorePython(CoreProtocol):
         self._epoch = Counter()
         self._started: bool = False
         self._metrics: Optional[RunMetrics] = None
+        self._heartbeat: Optional[Heartbeat] = None
 
     # ---------------------------------- 实验开始 ----------------------------------
 
@@ -122,6 +124,8 @@ class CorePython(CoreProtocol):
             experiment_id=self._experiment_id,
         )
         self._transport = Transport(sender=sender)
+        self._heartbeat = Heartbeat(self._experiment_id)
+        self._heartbeat.start()
         return resp
 
     def _report_run_start(self, record: StartRecord) -> StartResponse:
@@ -442,13 +446,20 @@ class CorePython(CoreProtocol):
         return FinishResponse(success=True, message="OK, but use offline")
 
     def _finish_when_online(self, finish_record: FinishRecord) -> FinishResponse:
+        # 1. 构建停止记录
         record, console_record = self._build_finish_record(finish_record)
         self._finish_store(record)
         assert self._transport is not None, "transport must be initialized before finishing"
         if console_record is not None:
             self._transport_put([console_record])
+        # 2. 等待 transport 发送完成
         self._transport.finish()
         self._transport = None
+        # 3. 停止心跳
+        if self._heartbeat is not None:
+            self._heartbeat.stop()
+            self._heartbeat = None
+        # 4. 向后端同步运行结束事件
         resp = self._report_run_finish(finish_record)
         # 如果仅仅是与后端同步出现问题，则换一个让用户安心一些的提示信息
         if resp is None:
