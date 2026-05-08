@@ -6,13 +6,15 @@
 本模块不负责具体的字符串长度等判断，这交给调用方处理
 """
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
-from swanlab.proto.swanlab.metric.column.v1.column_pb2 import ColumnClass, ColumnRecord, ColumnType
+from swanlab.proto.swanlab.metric.column.v1.column_pb2 import ColumnClass, ColumnRecord, ColumnType, SectionType
 from swanlab.proto.swanlab.metric.data.v1.data_pb2 import MediaRecord, ScalarRecord
-from swanlab.sdk.internal.context import RunContext
 
 __all__ = ["build_auto_column", "build_resume_column"]
+
+if TYPE_CHECKING:
+    from swanlab.sdk.internal.context import RunContext
 
 
 def build_resume_column(key: str, *, media: bool = False, system: bool = False) -> ColumnRecord:
@@ -36,14 +38,23 @@ def build_resume_column(key: str, *, media: bool = False, system: bool = False) 
     return column_record
 
 
-def build_auto_column(ctx: RunContext, data_record: Union[ScalarRecord, MediaRecord]) -> ColumnRecord:
+def build_auto_column(ctx: "RunContext", data_record: Union[ScalarRecord, MediaRecord]) -> ColumnRecord:
     """
     构建一个标量列记录，此函数一般用于自动构建用户已定义的指标
     """
-    # TODO: 解析 section name
-    column = ColumnRecord(
+    # Split section_name with `section_rule_index` setting
+    section_rule_index = ctx.config.settings.core.section_rule_index
+    parts = data_record.key.split("/")
+    if len(parts) >= 2:
+        cut = section_rule_index % (len(parts) - 1) + 1
+        section_name = "/".join(parts[:cut])
+    else:
+        section_name = ""
+
+    return ColumnRecord(
         column_class=ColumnClass.COLUMN_CLASS_CUSTOM,
         column_key=data_record.key,
         column_type=data_record.type,
+        section_name=section_name,
+        section_type=SectionType.SECTION_TYPE_PUBLIC,
     )
-    return column
