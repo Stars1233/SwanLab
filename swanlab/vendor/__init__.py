@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 # 1. Type hinting block: Only executed by static type checkers (e.g., Pyright, MyPy, IDEs)
 if TYPE_CHECKING:
+    import accelerate
+    import accelerate.tracking
     import boto3
     import imageio
     import matplotlib
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
     import swanboard
     import torch
     import torchvision
+    import transformers
+    import xgboost
+    import xgboost.callback
 
 
 # 2. Expose the available modules for IDE auto-completion
@@ -48,6 +53,10 @@ __all__ = [
     "torchvision",
     # these are extra dependencies which are not in [project.optional-dependencies]
     "pd",
+    # framework integrations
+    "accelerate",
+    "transformers",
+    "xgboost",
 ]
 
 # 3. Lazy import mapping: Actual module paths
@@ -66,6 +75,10 @@ _LAZY_IMPORTS = {
     "torchvision": "torchvision",
     # these are extra dependencies which are not in [project.optional-dependencies]
     "pd": "pandas",
+    # framework integrations — users install these themselves
+    "accelerate": "accelerate",
+    "transformers": "transformers",
+    "xgboost": "xgboost",
 }
 
 # 4. Optional dependencies mapping: Maps imported names to SwanLab's 'extras'
@@ -92,6 +105,9 @@ _SUBMODULE_IMPORTS = {
     "matplotlib": ["matplotlib.figure"],
     "sklearn": ["sklearn.metrics"],
     "rdkit": ["rdkit.Chem", "rdkit.Chem.AllChem"],
+    "accelerate": ["accelerate.tracking"],
+    "transformers": ["transformers.trainer_callback"],
+    "xgboost": ["xgboost.callback"],
 }
 
 
