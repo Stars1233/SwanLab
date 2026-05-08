@@ -75,8 +75,6 @@ class BackgroundConsumer(ConsumerProtocol):
         self._flush_timeout = flush_timeout
         self._batch_size = batch_size
         self._thread = threading.Thread(target=self._run, name="SwanLab·Specter", daemon=True)
-        # 指标状态
-        self._metrics = self._ctx.metrics
         # 回调器，负责触发回调
         self._callbacker = self._ctx.callbacker
 
@@ -179,37 +177,17 @@ class BackgroundConsumer(ConsumerProtocol):
     def _handle_metric_log(self, event: MetricLogEvent) -> None:
         for key, value in event.data.items():
             with safe.block(message=f"Error when parsing metric '{key}'"):
-                data_record, cls = self._builder.build_log(value, key, event.timestamp, event.step)
+                data_record, _ = self._builder.build_log(value, key, event.timestamp, event.step)
                 if data_record is None:
                     console.warning(f"Metric '{key}' at step {event.step} returned no data, skipped")
                     continue
-                # 1. 如果指标未定义，则定义此指标
-                metric = self._metrics.get(key)
-                if metric is None:
-                    this_column, metric = self._builder.build_column_from_log(cls, key)
-                    self._column_batch.append(this_column)
-                else:
-                    # 确保已定义的指标类型相同
-                    metric.ensure_type_match(cls.column_type())
-                # 2. 如果指标已定义，则检查是否已记录过此步数，如果已记录过，则跳过，否则记录
-                if metric.check_and_mark_logged(event.step):
-                    console.debug(f"Metric '{key}' at step {event.step} has already been logged, skipped")
-                    continue
-                # 3. 如果指标是标量，则更新标量指标状态，否则更新媒体指标状态
                 if isinstance(data_record, ScalarRecord):
-                    metric.update(data_record)
                     self._scalar_batch.append(data_record)
                 else:
                     self._media_batch.append(data_record)
 
     def _handle_scalar_define(self, event: ScalarDefineEvent) -> None:
-        # 1. 如果已经定义，则跳过
-        metric = self._metrics.get(event.key)
-        if metric is not None:
-            console.warning(f"Metric '{event.key}' has already been defined, skip redefine.")
-            return
-        # 2. 如果未定义，则定义此指标
-        this_column, _ = self._builder.build_column_from_scalar_define(event)
+        this_column = self._builder.build_column_from_scalar_define(event)
         self._column_batch.append(this_column)
 
     def _flush(self) -> None:
