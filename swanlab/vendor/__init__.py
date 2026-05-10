@@ -16,10 +16,21 @@ if TYPE_CHECKING:
     import accelerate.tracking
     import boto3
     import imageio
+    import keras
+    import lightning
+    import lightning.pytorch
+    import lightning.pytorch.loggers
+    import lightning.pytorch.utilities
     import matplotlib
     import matplotlib.figure
+    import mmengine
+    import mmengine.config
+    import mmengine.registry
+    import mmengine.visualization.vis_backend
     import moviepy
     import numpy as np
+    import paddlenlp
+    import paddlenlp.trainer.trainer
     import pandas as pd
     import PIL
     import PIL.Image
@@ -33,6 +44,7 @@ if TYPE_CHECKING:
     import torch
     import torchvision
     import transformers
+    import ultralytics
     import xgboost
     import xgboost.callback
 
@@ -55,7 +67,12 @@ __all__ = [
     "pd",
     # framework integrations
     "accelerate",
+    "keras",
+    "lightning",
+    "mmengine",
+    "paddlenlp",
     "transformers",
+    "ultralytics",
     "xgboost",
 ]
 
@@ -77,7 +94,12 @@ _LAZY_IMPORTS = {
     "pd": "pandas",
     # framework integrations — users install these themselves
     "accelerate": "accelerate",
+    "keras": "keras",
+    "lightning": "lightning",
+    "mmengine": "mmengine",
+    "paddlenlp": "paddlenlp",
     "transformers": "transformers",
+    "ultralytics": "ultralytics",
     "xgboost": "xgboost",
 }
 
@@ -106,8 +128,12 @@ _SUBMODULE_IMPORTS = {
     "sklearn": ["sklearn.metrics"],
     "rdkit": ["rdkit.Chem", "rdkit.Chem.AllChem"],
     "accelerate": ["accelerate.tracking"],
+    "keras": ["keras.callbacks"],
+    "lightning": ["lightning.pytorch", "lightning.pytorch.loggers", "lightning.pytorch.utilities"],
+    "mmengine": ["mmengine.config", "mmengine.registry", "mmengine.visualization.vis_backend"],
     "transformers": ["transformers.trainer_callback"],
     "xgboost": ["xgboost.callback"],
+    "paddlenlp": ["paddlenlp.trainer.trainer"],
 }
 
 

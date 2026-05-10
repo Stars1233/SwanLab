@@ -1,3 +1,23 @@
+"""
+Docs: https://docs.swanlab.cn/guide_cloud/integration/integration-paddlenlp.html
+
+Usage:
+------
+from paddlenlp.trainer import Trainer, TrainingArguments
+import swanlab
+from swanlab.integration.paddlenlp import SwanLabCallback
+
+swanlab.init(project="my-project", callbacks=[SwanLabCallback()])
+trainer = Trainer(model=model, args=training_args, callbacks=[swanlab_callback])
+trainer.train()
+swanlab.finish()
+------
+
+Legacy compat (auto-init):
+  trainer = Trainer(model=model, callbacks=[SwanLabCallback(project="my-project")])
+  # SwanLab initializes automatically on first callback — no swanlab.init() needed
+"""
+
 from __future__ import annotations
 
 import os
@@ -9,7 +29,6 @@ from swanlab import Callback
 
 if TYPE_CHECKING:
     from pathlib import Path
-
 
 _SINGLE_VALUE_SCALARS = {
     "train_runtime",
@@ -36,7 +55,7 @@ def rewrite_logs(logs: Mapping[str, Any]) -> Dict[str, Any]:
     return new_logs
 
 
-class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.TrainerCallback):
+class SwanLabCallback(Callback, swanlab.vendor.paddlenlp.trainer.trainer.TrainerCallback):
     def __init__(
         self,
         *,
@@ -63,6 +82,10 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
         ]:
             if value is not None:
                 self._init_kwargs[key] = value
+        tags_val = self._init_kwargs.get("tags", [])
+        if "paddlenlp" not in tags_val:
+            tags_val.append("paddlenlp")
+        self._init_kwargs["tags"] = tags_val
 
         self._trainer_initialized = False
         self._pending_config: Dict[str, Any] = {}
@@ -70,23 +93,36 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
 
     @property
     def name(self) -> str:
-        return "swanlab-integration-transformers"
+        return "swanlab-integration-paddlenlp"
 
-    def on_run_initialized(self, run_dir: Path, path: str, **kwargs) -> None:
+    # --- swanlab.Callback hooks ---
+
+    def on_run_initialized(self, run_dir: Path, path: str, *args, **kwargs) -> None:
         self._flush_pending_config()
 
-    def on_run_finished(self, state: str, error: Optional[str] = None) -> None:
+    def on_run_finished(self, state: str, error: Optional[str] = None, *args, **kwargs) -> None:
         self._trainer_initialized = False
         self._pending_config.clear()
         self._eval_logged_steps.clear()
+
+    # --- PaddleNLP TrainerCallback hooks ---
 
     def setup(self, args: Any, state: Any, model: Any = None) -> None:
         if self._trainer_initialized or not self._is_world_process_zero(state):
             return
 
-        # Auto-init if no active run (backward compat with legacy scripts)
         if self._get_active_run() is None:
-            swanlab.init(callbacks=[self], **self._init_kwargs)
+            init_kwargs = dict(self._init_kwargs)
+            trial_name = getattr(state, "trial_name", None)
+            if trial_name is not None:
+                run_name = getattr(args, "run_name", None)
+                init_kwargs.setdefault("experiment_name", f"{run_name}-{trial_name}" if run_name else trial_name)
+            elif getattr(args, "run_name", None) is not None:
+                init_kwargs.setdefault("experiment_name", args.run_name)
+            env_project = os.getenv("SWANLAB_PROJECT")
+            if env_project is not None:
+                init_kwargs.setdefault("project", env_project)
+            swanlab.init(callbacks=[self], **init_kwargs)
 
         self._trainer_initialized = True
         if self._log_config:
@@ -155,7 +191,7 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
         step = self._get_step(state)
         output_dir = getattr(args, "output_dir", None)
         if output_dir:
-            run.config["transformers_last_checkpoint"] = os.path.join(output_dir, f"checkpoint-{step}")
+            run.config["paddlenlp_last_checkpoint"] = os.path.join(output_dir, f"checkpoint-{step}")
 
     def on_predict(
         self,
@@ -170,6 +206,8 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
             return
 
         self._log(rewrite_logs(metrics), self._get_step(state))
+
+    # --- helpers ---
 
     @staticmethod
     def _is_world_process_zero(state: Any) -> bool:
@@ -191,7 +229,7 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
         return self._is_world_process_zero(state) and self._get_active_run() is not None
 
     def _collect_config(self, args: Any, state: Any, model: Any = None) -> Dict[str, Any]:
-        config: Dict[str, Any] = {"FRAMEWORK": "transformers"}
+        config: Dict[str, Any] = {"FRAMEWORK": "paddlenlp"}
 
         model_config = getattr(model, "config", None)
         if isinstance(model_config, dict):
@@ -215,7 +253,7 @@ class SwanLabCallback(Callback, swanlab.vendor.transformers.trainer_callback.Tra
 
         trial_name = getattr(state, "trial_name", None)
         if trial_name is not None:
-            config["transformers_trial_name"] = trial_name
+            config["paddlenlp_trial_name"] = trial_name
 
         num_parameters = getattr(model, "num_parameters", None)
         if callable(num_parameters):
