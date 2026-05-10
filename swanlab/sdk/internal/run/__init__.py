@@ -9,6 +9,7 @@
 """
 
 import atexit
+import glob
 import signal
 import sys
 import threading
@@ -17,12 +18,13 @@ from concurrent.futures import Future
 from functools import cached_property, wraps
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Callable, Literal, Mapping, Optional, Type, Union, cast, get_args
+from typing import Any, Callable, List, Literal, Mapping, Optional, Tuple, Type, Union, cast, get_args
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from swanlab.proto.swanlab.run.v1.run_pb2 import FinishRecord
 from swanlab.sdk.internal.bus import MetricLogEvent
+from swanlab.sdk.internal.bus.events import FileSaveEvent
 from swanlab.sdk.internal.context import RunContext
 from swanlab.sdk.internal.pkg import adapter, console, fork, helper, safe
 from swanlab.sdk.internal.run import greeting
@@ -38,6 +40,7 @@ from swanlab.sdk.internal.run.transforms import (
     Video,
     normalize_media_input,
 )
+from swanlab.sdk.internal.settings.core import CoreSettings
 from swanlab.sdk.typings.run import AsyncLogType, FinishType, ModeType
 from swanlab.sdk.typings.run.column import ScalarXAxisType
 from swanlab.sdk.typings.run.transforms import CaptionsType
@@ -130,7 +133,6 @@ class Run:
         # 独立组件
         self._core = self._ctx.core
         self._probe = self._ctx.probe
-
         # 2. 注册副作用
         # 设置全局运行实例
         set_run(self)
@@ -630,6 +632,70 @@ class Run:
         #         chart=None,
         #     )
         # )
+
+    @with_api("run.save()")
+    def save(
+        self,
+        glob_str: Union[str, bytes],
+        base_path: Optional[Union[str, Path]] = None,
+        policy: Literal["now", "end", "live"] = "live",
+    ) -> List[str]:
+        """Save files matched by glob into the current run.
+
+        :param glob_str: A glob pattern matching files to save (e.g. ``"checkpoints/*.pt"``).
+        :param base_path: Base directory for resolving relative paths. Defaults to cwd.
+        :param policy: Save policy:
+
+            - ``"now"`` — upload matched files immediately.
+            - ``"end"`` — defer upload until the run finishes.
+            - ``"live"`` — watch for file changes and re-upload automatically.
+
+        :return: List of matched file paths (relative to base_path).
+        """
+        resolved_paths = fmt.resolve_save_paths(glob_str, base_path)
+        if resolved_paths is None:
+            return []
+        resolved_glob, resolved_base = resolved_paths
+
+        # Glob 匹配文件
+        matched = glob.glob(str(resolved_glob), recursive=True)
+        if not matched:
+            console.warning(f"No files matched by glob pattern: {glob_str}")
+            return []
+
+        # 过滤出普通文件，计算相对路径
+        save_settings = self._ctx.config.settings.core.save
+        files: List[Tuple[Path, Path]] = []
+        for abs_str in matched:
+            abs_path = Path(abs_str)
+            if not abs_path.is_file():
+                continue
+            try:
+                rel_path = abs_path.relative_to(resolved_base)
+            except ValueError:
+                continue
+            files.append((abs_path, rel_path))
+
+        if not files:
+            console.warning(f"No files matched by glob pattern: {glob_str}")
+            return []
+
+        # 校验批次大小
+        if len(files) > save_settings.max_batch_size:
+            raise ValueError(f"Too many files matched ({len(files)}), limit is {save_settings.max_batch_size}")
+
+        # 按 policy 分发事件
+        # Core 负责创建 symlink 处理和 end policy 下的延迟上传
+        results: List[str] = []
+        for source_path, rel_path in files:
+            event = FileSaveEvent(
+                source_path=str(source_path),
+                name=str(rel_path),
+                policy=policy,
+            )
+            self._components.emitter.emit(event)
+            results.append(str(rel_path))
+        return results
 
     @with_api("run.finish()", must_alive=False)
     def finish(

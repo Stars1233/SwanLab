@@ -7,8 +7,9 @@ r"""
 @description: transport 辅助函数
 """
 
+import hashlib
 from collections import OrderedDict
-from typing import Dict, Iterator, List, Sequence, Tuple
+from typing import Dict, Iterator, List, Sequence, Tuple, Union
 
 from swanlab.proto.swanlab.record.v1.record_pb2 import Record
 
@@ -54,3 +55,15 @@ def group_records_by_type(records: Sequence[Record]) -> Dict[str, List[Record]]:
             raise ValueError("Record.record_type is not set")
         records_by_type.setdefault(record_type, []).append(record)
     return records_by_type
+
+
+def compute_md5(source: Union[str, bytes], chunk_size: int = 8 * 1024 * 1024) -> str:
+    """计算 MD5。接受文件路径（str）或已读取的字节数据（bytes）。"""
+    md5 = hashlib.md5()
+    if isinstance(source, bytes):
+        md5.update(source)
+    else:
+        with open(source, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                md5.update(chunk)
+    return md5.hexdigest()

@@ -32,6 +32,7 @@ from swanlab.proto.swanlab.run.v1.run_pb2 import (
     StartRecord,
     StartResponse,
 )
+from swanlab.proto.swanlab.save.v1.save_pb2 import SaveRecord
 from swanlab.proto.swanlab.system.v1.console_pb2 import ConsoleRecord, StreamType
 from swanlab.proto.swanlab.system.v1.env_pb2 import CondaRecord, MetadataRecord, RequirementsRecord
 from swanlab.sdk.internal.context import RunContext
@@ -47,6 +48,7 @@ from swanlab.sdk.internal.core_python.pkg import builder, counter
 from swanlab.sdk.internal.core_python.store import DataStoreWriter
 from swanlab.sdk.internal.core_python.transport import Transport
 from swanlab.sdk.internal.core_python.transport.sender import HttpRecordSender
+from swanlab.sdk.internal.core_python.watcher import FileWatcher, create_save_links
 from swanlab.sdk.internal.pkg import adapter, console, safe
 from swanlab.sdk.protocol import CoreProtocol
 from swanlab.sdk.typings.core_python.api.experiment import ResumeExperimentSummaryType
@@ -77,6 +79,9 @@ class CorePython(CoreProtocol):
         self._started: bool = False
         self._metrics: Optional[RunMetrics] = None
         self._heartbeat: Optional[Heartbeat] = None
+        # save 相关
+        self._watcher = FileWatcher(on_change=self._on_file_changed)
+        self._pending_end_saves: List[Record] = []
 
     # ---------------------------------- 实验开始 ----------------------------------
 
@@ -120,6 +125,7 @@ class CorePython(CoreProtocol):
             project=self._project,
             project_id=self._project_id,
             experiment_id=self._experiment_id,
+            ctx=self._ctx,
         )
         self._transport = Transport(sender=sender)
         self._heartbeat = Heartbeat(self._experiment_id)
@@ -394,6 +400,55 @@ class CorePython(CoreProtocol):
         self._store_records(records)
         self._transport_put(records)
 
+    # ---- upsert_saves ----
+    def _create_save_with_links(self, saves: List[SaveRecord]) -> None:
+        linked = create_save_links(saves, self._ctx.files_dir)
+        if linked > 0:
+            console.info(
+                f"Symlinked {linked} files into the SwanLab run directory; call swanlab.save again to sync new files."
+            )
+
+    def _upsert_saves_when_local(self, saves: List[SaveRecord]) -> None:
+        self._create_save_with_links(saves)
+        records = [builder.build_save_record(self._counter, s) for s in saves]
+        self._store_records(records)
+        self._watcher.register_live_watches(saves, self._ctx.files_dir)
+
+    def _upsert_saves_when_offline(self, saves: List[SaveRecord]) -> None:
+        self._create_save_with_links(saves)
+        records = [builder.build_save_record(self._counter, s) for s in saves]
+        self._store_records(records)
+        self._watcher.register_live_watches(saves, self._ctx.files_dir)
+
+    def _upsert_saves_when_online(self, saves: List[SaveRecord]) -> None:
+        self._create_save_with_links(saves)
+        records = [builder.build_save_record(self._counter, s) for s in saves]
+        self._store_records(records)
+        self._watcher.register_live_watches(saves, self._ctx.files_dir)
+        # "end" policy saves: store locally but defer cloud upload until finish
+        transport_records: List[Record] = []
+        for save, record in zip(saves, records):
+            if save.policy == adapter.policy["end"]:
+                self._pending_end_saves.append(record)
+            else:
+                transport_records.append(record)
+        if transport_records:
+            self._transport_put(transport_records)
+
+    # ---- file watcher ----
+
+    def _on_file_changed(self, save_record: SaveRecord) -> None:
+        """FileWatcher 回调：持久化 + 可选上传。"""
+        if not self._started or self._store is None:
+            return
+        records = [builder.build_save_record(self._counter, save_record)]
+        self._store_records(records)
+        if self._mode == "online" and self._transport is not None:
+            self._transport_put(records)
+
+    def _stop_watcher(self) -> None:
+        self._watcher.stop()
+
     # ---------------------------------- fork 方法 ----------------------------------
 
     def fork(self) -> "CorePython":
@@ -435,23 +490,30 @@ class CorePython(CoreProtocol):
         return record, console_record
 
     def _finish_when_local(self, finish_record: FinishRecord) -> FinishResponse:
+        self._stop_watcher()
         record, _ = self._build_finish_record(finish_record)
         self._finish_store(record)
         return FinishResponse(success=True, message="OK, but use local")
 
     def _finish_when_offline(self, finish_record: FinishRecord) -> FinishResponse:
+        self._stop_watcher()
         record, _ = self._build_finish_record(finish_record)
         self._finish_store(record)
         return FinishResponse(success=True, message="OK, but use offline")
 
     def _finish_when_online(self, finish_record: FinishRecord) -> FinishResponse:
+        self._stop_watcher()
         # 1. 构建停止记录
         record, console_record = self._build_finish_record(finish_record)
         self._finish_store(record)
         assert self._transport is not None, "transport must be initialized before finishing"
         if console_record is not None:
             self._transport_put([console_record])
-        # 2. 等待 transport 发送完成
+        # 2. 刷出暂存的 end-policy save 记录
+        if self._pending_end_saves:
+            self._transport_put(self._pending_end_saves)
+            self._pending_end_saves.clear()
+        # 3. 等待 transport 发送完成
         self._transport.finish()
         self._transport = None
         # 3. 停止心跳

@@ -6,17 +6,20 @@
 """
 
 from _io import BytesIO
+from collections.abc import Sequence
 from typing import Dict, List
 
 from requests.sessions import Session
 
 from swanlab.sdk.internal.core_python import client
 from swanlab.sdk.internal.core_python.pkg.executor import SafeThreadPoolExecutor
+from swanlab.sdk.internal.pkg import safe
 from swanlab.sdk.typings.core_python.api.upload import (
     UploadColumns,
     UploadLogBatch,
     UploadMediaBatch,
     UploadMetricPayload,
+    UploadResource,
     UploadScalarBatch,
 )
 
@@ -157,4 +160,29 @@ def upload_resource(session: Session, experiment_id: str, *, paths: List[str], b
                 )
             )
         for future in futures:
-            future.result()
+            resp = future.result()
+            resp.raise_for_status()
+
+
+def upload_saves(
+    session: Session,
+    *,
+    resources: Sequence[UploadResource],
+) -> set[str]:
+    """通过预签名 URL 批量上传本地文件到对象存储，返回成功上传的 source_path 集合。"""
+
+    @safe.decorator(message="Failed to upload save file, skipping")
+    def upload_one(resource: UploadResource) -> bool:
+        with open(resource["source_path"], "rb") as f:
+            resp = session.put(resource["url"], data=f, headers={"Content-Type": resource["content_type"]})
+            resp.raise_for_status()
+        return True
+
+    uploaded: set[str] = set()
+    with SafeThreadPoolExecutor(max_workers=8) as executor:
+        futures = [(executor.submit(upload_one, resource), resource["source_path"]) for resource in resources]
+        for future, source_path in futures:
+            if future.result() is True:
+                uploaded.add(source_path)
+
+    return uploaded
