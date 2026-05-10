@@ -79,6 +79,8 @@ def compatible_kwargs(model_dict: dict, **kwargs) -> dict:
     set_nested_value(model_dict, "experiment.name", kwargs.pop("experiment_name", None))
     # notes --> description
     set_nested_value(model_dict, "experiment.description", kwargs.pop("notes", None))
+    # logdir --> log_dir (backward compatibility)
+    set_nested_value(model_dict, "log_dir", kwargs.pop("logdir", None))
     return model_dict
 
 
@@ -86,7 +88,7 @@ def compatible_kwargs(model_dict: dict, **kwargs) -> dict:
 def init(
     *,
     reinit: Optional[bool] = None,
-    logdir: Optional[str] = None,
+    log_dir: Optional[str] = None,
     mode: Optional[ModeType] = None,
     workspace: Optional[str] = None,
     project: Optional[str] = None,
@@ -112,7 +114,7 @@ def init(
 
     :param reinit: If True, finish the current run before starting a new one. Defaults to False.
 
-    :param logdir: Directory to store logs. Defaults to "./swanlog".
+    :param log_dir: Directory to store logs. Defaults to "./swanlog".
 
     :param mode: Run mode. Options: "online" (sync to cloud), "local" (local only),
         "offline" (save locally for later sync), "disabled" (no logging). Defaults to "online".
@@ -201,7 +203,7 @@ def init(
     # 3. 基于传入的参数，合并当前配置，此步骤必须在合并全局配置之后，因为传入的参数的优先级是高于全局配置的
     args_dict = compatible_kwargs({}, **kwargs)
     for key, value in {
-        "logdir": logdir,
+        "log_dir": log_dir,
         "mode": mode,
         "project.name": project or Path.cwd().name,
         "project.workspace": workspace,
@@ -518,12 +520,12 @@ def _init(run_settings: Settings, callbacks: Optional[CallbacksType]) -> Tuple[R
         # 暂时不允许resume时、旧实验进行硬件信息采集、终端代理
         resume_limit_kwargs = {}
         if not resp.new_experiment:
-            resume_limit_kwargs["environment.hardware"] = False
-            resume_limit_kwargs["environment.requirements"] = False
-            resume_limit_kwargs["environment.conda"] = False
-            resume_limit_kwargs["environment.git"] = False
-            resume_limit_kwargs["environment.swanlab"] = False
-            resume_limit_kwargs["monitor.enable"] = False
+            resume_limit_kwargs["probe.hardware"] = False
+            resume_limit_kwargs["probe.requirements"] = False
+            resume_limit_kwargs["probe.conda"] = False
+            resume_limit_kwargs["probe.git"] = False
+            resume_limit_kwargs["probe.swanlab"] = False
+            resume_limit_kwargs["probe.monitor"] = False
             resume_limit_kwargs["console.proxy_type"] = "none"
             console.info(
                 "Hardware information collection, monitor, and terminal proxy have been disabled in resume mode."
