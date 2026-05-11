@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     import accelerate
     import accelerate.tracking
     import boto3
+    import fastai
+    import fastai.learner
+    import fastcore
+    import fastcore.basics
     import imageio
     import keras
     import lightning
@@ -40,8 +44,12 @@ if TYPE_CHECKING:
     import sklearn
     import sklearn.metrics
     import soundfile
+    import stable_baselines3
+    import stable_baselines3.common
     import swanboard
     import torch
+    import torchtune
+    import torchtune.utils.metric_logging
     import torchvision
     import transformers
     import ultralytics
@@ -67,6 +75,8 @@ __all__ = [
     "pd",
     # framework integrations
     "accelerate",
+    "fastai",
+    "fastcore",
     "keras",
     "lightning",
     "mmengine",
@@ -74,6 +84,8 @@ __all__ = [
     "transformers",
     "ultralytics",
     "xgboost",
+    "stable_baselines3",
+    "torchtune",
 ]
 
 # 3. Lazy import mapping: Actual module paths
@@ -94,12 +106,16 @@ _LAZY_IMPORTS = {
     "pd": "pandas",
     # framework integrations — users install these themselves
     "accelerate": "accelerate",
+    "fastai": "fastai",
+    "fastcore": "fastcore",
     "keras": "keras",
     "lightning": "lightning",
     "mmengine": "mmengine",
     "paddlenlp": "paddlenlp",
     "transformers": "transformers",
     "ultralytics": "ultralytics",
+    "stable_baselines3": "stable_baselines3",
+    "torchtune": "torchtune",
     "xgboost": "xgboost",
 }
 
@@ -128,12 +144,16 @@ _SUBMODULE_IMPORTS = {
     "sklearn": ["sklearn.metrics"],
     "rdkit": ["rdkit.Chem", "rdkit.Chem.AllChem"],
     "accelerate": ["accelerate.tracking"],
+    "fastai": ["fastai.learner", "fastai.callback.hook"],
+    "fastcore": ["fastcore.basics"],
     "keras": ["keras.callbacks"],
     "lightning": ["lightning.pytorch", "lightning.pytorch.loggers", "lightning.pytorch.utilities"],
     "mmengine": ["mmengine.config", "mmengine.registry", "mmengine.visualization.vis_backend"],
     "transformers": ["transformers.trainer_callback"],
     "xgboost": ["xgboost.callback"],
     "paddlenlp": ["paddlenlp.trainer.trainer"],
+    "stable_baselines3": ["stable_baselines3.common"],
+    "torchtune": ["torchtune.utils.metric_logging"],
 }
 
 
