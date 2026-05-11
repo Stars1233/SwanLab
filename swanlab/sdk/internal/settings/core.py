@@ -40,7 +40,16 @@ class MediaSettings(BaseModel):
 class RecordSettings(BaseModel):
     """Record 上传批次限制。"""
 
-    pass
+    batch_interval: float = Field(default=5.0, gt=0)
+    """
+    Batch interval (seconds) for the Transport upload thread.
+    Default 5.0s. Use a smaller value (e.g. 0.5) in Converter scenarios for higher throughput.
+    """
+
+    batch_size: int = Field(default=10_000, gt=0)
+    """
+    Batch size of records per HTTP request in Dispatch. Default 10000. 
+    """
 
 
 class CoreSettings(BaseModel):
