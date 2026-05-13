@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     import lightning.pytorch.utilities
     import matplotlib
     import matplotlib.figure
+    import mlflow
     import mmengine
     import mmengine.config
     import mmengine.registry
@@ -47,12 +48,16 @@ if TYPE_CHECKING:
     import stable_baselines3
     import stable_baselines3.common
     import swanboard
+    import tensorboard
+    import tensorboard.backend.event_processing
+    import tensorboard.util
     import torch
     import torchtune
     import torchtune.utils.metric_logging
     import torchvision
     import transformers
     import ultralytics
+    import wandb
     import xgboost
     import xgboost.callback
 
@@ -68,9 +73,12 @@ __all__ = [
     "sklearn",
     "soundfile",
     "swanboard",
+    "tensorboard",
     "boto3",
     "torch",
     "torchvision",
+    "wandb",
+    "mlflow",
     # these are extra dependencies which are not in [project.optional-dependencies]
     "pd",
     # framework integrations
@@ -99,6 +107,7 @@ _LAZY_IMPORTS = {
     "sklearn": "sklearn",
     "soundfile": "soundfile",
     "swanboard": "swanboard",
+    "tensorboard": "tensorboard",
     "boto3": "boto3",
     "torch": "torch",
     "torchvision": "torchvision",
@@ -116,6 +125,8 @@ _LAZY_IMPORTS = {
     "ultralytics": "ultralytics",
     "stable_baselines3": "stable_baselines3",
     "torchtune": "torchtune",
+    "wandb": "wandb",
+    "mlflow": "mlflow",
     "xgboost": "xgboost",
 }
 
@@ -154,6 +165,12 @@ _SUBMODULE_IMPORTS = {
     "paddlenlp": ["paddlenlp.trainer.trainer"],
     "stable_baselines3": ["stable_baselines3.common"],
     "torchtune": ["torchtune.utils.metric_logging"],
+    "wandb": ["wandb.sdk.internal.datastore", "wandb.proto"],
+    "tensorboard": [
+        "tensorboard.backend.event_processing",
+        "tensorboard.backend.event_processing.event_file_loader",
+        "tensorboard.util",
+    ],
 }
 
 
