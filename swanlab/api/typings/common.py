@@ -8,6 +8,8 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
+from pydantic import BaseModel, Field, model_validator
+
 # 启用/停用
 ApiStatusLiteral = Literal["ENABLED", "DISABLED"]
 
@@ -135,7 +137,38 @@ ApiFilterOpLiteral = Literal["EQ", "NEQ", "GTE", "LTE", "IN", "NOT IN", "CONTAIN
 ApiSortOrderLiteral = Literal["ASC", "DESC"]
 
 # 后端允许的每页条数
-_VALID_PAGE_SIZES = (10, 12, 15, 20, 24, 27, 50, 100)
+VALID_PAGE_SIZES = (10, 12, 15, 20, 24, 27, 50, 100)
+
+# asyncio 并发请求数
+MAX_CONCURRENT_COUNT: int = 4
+
+
+class RangeQuery(BaseModel, frozen=True):
+    """
+    SCALAR 指标范围查询参数。
+
+    type: 维度，支持 "step" / "timestamp"
+    start: 起始边界（含），None 表示从头开始
+    end: 结束边界（含），None 表示到最后
+    head: 取前 N 条（与 tail 互斥）
+    tail: 取后 N 条（与 head 互斥）
+
+    head/tail 与 start/end 可组合：先 start/end 过滤，再取 head/tail。
+    """
+
+    type: Literal["step", "timestamp"] = "step"
+    start: Optional[int] = Field(default=None, ge=0)
+    end: Optional[int] = Field(default=None, ge=0)
+    head: Optional[int] = Field(default=None, gt=0)
+    tail: Optional[int] = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_range_query(self) -> "RangeQuery":
+        if self.head is not None and self.tail is not None:
+            raise ValueError("head and tail are mutually exclusive")
+        if self.start is not None and self.end is not None and self.start > self.end:
+            raise ValueError(f"start must be <= end, got ({self.start}, {self.end})")
+        return self
 
 
 @dataclass(frozen=True)
@@ -159,8 +192,8 @@ class PaginatedQuery:
     def __post_init__(self) -> None:
         if self.page < 1:
             raise ValueError(f"page must be >= 1, got {self.page}")
-        if self.size not in _VALID_PAGE_SIZES:
-            raise ValueError(f"size must be one of {_VALID_PAGE_SIZES}, got {self.size}")
+        if self.size not in VALID_PAGE_SIZES:
+            raise ValueError(f"size must be one of {VALID_PAGE_SIZES}, got {self.size}")
 
     def to_params(self, **extra: Optional[Any]) -> Dict[str, Any]:
         """转换为查询参数字典，自动过滤 None 值。"""

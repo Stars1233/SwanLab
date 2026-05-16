@@ -7,11 +7,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Union
 
 from swanlab.api.base import ApiClientContext, BaseEntity
 from swanlab.api.typings import ApiColumnCsvExportType, ApiResponseType
-from swanlab.api.typings.common import ApiMetricColumnTypeLiteral, ApiMetricLogLevelLiteral
+from swanlab.api.typings.common import ApiMetricColumnTypeLiteral, ApiMetricLogLevelLiteral, RangeQuery
 from swanlab.api.typings.metric import (
     ApiLogSeriesType,
     ApiMediaItemDataType,
@@ -19,7 +19,10 @@ from swanlab.api.typings.metric import (
     ApiScalarSeriesType,
 )
 from swanlab.api.utils import get_properties, validate_metric_keys, validate_metric_log_level, validate_metric_type
-from swanlab.sdk.internal.pkg import console
+from swanlab.sdk.internal.pkg import console, safe
+
+if TYPE_CHECKING:
+    from swanlab.sdk.internal.pkg.client import Client
 
 _SCALAR_STATISTIC_FIELDS = ("min", "max", "avg", "median", "latest")
 _METRIC_SHARED_KEYS = frozenset({"project_id", "run_id", "metric_type"})
@@ -31,6 +34,67 @@ def _extract_csv_url(data: Any) -> str:
     if isinstance(data, dict):
         return data.get("url", "")
     return ""
+
+
+@safe.decorator(message="Failed to download CSV")
+def _stream_csv_rows(
+    client: "Client",
+    url: str,
+    rq: Optional[RangeQuery] = None,
+    timeout: int = 30,
+) -> Optional[List[Dict[str, Any]]]:
+    """流式下载 CSV 并逐行解析，复用 Client session（保留 proxy/retry 配置）。"""
+    import csv
+    from collections import deque
+
+    resp = client._session.get(url, stream=True, timeout=timeout)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+
+    lines = resp.iter_lines(decode_unicode=True)
+    next(lines, None)  # skip header
+
+    max_len = rq.tail if rq is not None and rq.tail is not None else None
+    rows: Union[deque[Dict[str, Any]], List[Dict[str, Any]]] = deque(maxlen=max_len) if max_len is not None else []
+
+    for row in csv.reader(lines):
+        if not row or len(row) < 2:
+            continue
+        try:
+            step = int(row[0])
+            value = float(row[1])
+        except (ValueError, IndexError):
+            continue
+
+        item: Dict[str, Any] = {"step": step, "value": value}
+
+        if len(row) >= 3:
+            try:
+                item["timestamp"] = int(row[2])
+            except (ValueError, IndexError):
+                pass
+
+        if rq is not None:
+            if rq.type == "timestamp":
+                ts = item.get("timestamp")
+                if ts is None:
+                    console.warning(f"CSV row missing timestamp column: {row}")
+                    continue
+                if rq.start is not None and ts < rq.start:
+                    continue
+                if rq.end is not None and ts > rq.end:
+                    break
+            else:
+                if rq.start is not None and step < rq.start:
+                    continue
+                if rq.end is not None and step > rq.end:
+                    break
+            if rq.head is not None and len(rows) >= rq.head:
+                break
+
+        rows.append(item)
+
+    return list(rows)
 
 
 class Metric(BaseEntity):
@@ -163,12 +227,13 @@ class Metric(BaseEntity):
         run_id: str,
         keys: List[str],
         sample: int = 1500,
+        x_type: str = "step",
         root_pro_id: str = "",
         root_exp_id: str = "",
     ) -> Dict[str, Any]:
         return {
             "projectId": project_id,
-            "xType": "step",
+            "xType": x_type,
             "range": [0, 0],
             "columns": [Metric._build_column_ref(run_id, key, root_pro_id, root_exp_id) for key in keys],
             "num": sample if sample <= 1500 else 1500,
@@ -418,6 +483,7 @@ class Metrics(BaseEntity):
         ignore_timestamp: bool = False,
         media_step: Optional[int] = None,
         all: bool = False,
+        range_query: Optional[RangeQuery] = None,
         root_pro_id: str = "",
         root_exp_id: str = "",
     ) -> None:
@@ -426,6 +492,8 @@ class Metrics(BaseEntity):
         validate_metric_type(metric_type, keys[0])
         if metric_type == "LOG":
             raise ValueError("Metrics does not support LOG metric_type, use Experiment.logs() instead")
+        if range_query is not None and metric_type != "SCALAR":
+            raise ValueError("range_query is only supported for SCALAR metric_type")
         self._project_id = project_id
         self._run_id = run_id
         self._keys = keys
@@ -434,6 +502,7 @@ class Metrics(BaseEntity):
         self._ignore_timestamp = ignore_timestamp
         self._media_step = media_step
         self._all = all
+        self._range_query = range_query
         self._root_pro_id = root_pro_id
         self._root_exp_id = root_exp_id
         self._page_info: Dict[str, Any] = {
@@ -450,7 +519,9 @@ class Metrics(BaseEntity):
 
     def __iter__(self) -> Iterator[Metric]:
         if self._metric_type == "SCALAR":
-            if self._all:
+            if self._range_query is not None:
+                yield from self._fetch_scalars_range()
+            elif self._all:
                 yield from self._fetch_scalars_all()
             else:
                 yield from self._fetch_scalars()
@@ -476,6 +547,89 @@ class Metrics(BaseEntity):
             root_exp_id=self._root_exp_id,
         )
 
+    def _fetch_value_stats_dual(self, keys: List[str], sample: int) -> List[Dict[str, Any]]:
+        """并发获取 step/time 两种 x_type 的统计值，合并为扁平结构。"""
+        value_path = "/house/metrics/scalar/value"
+        requests = [
+            (
+                self._post,
+                value_path,
+                {
+                    "data": Metric._build_scalar_payload(
+                        self._project_id,
+                        self._run_id,
+                        keys,
+                        sample,
+                        x_type=x_type,
+                        root_pro_id=self._root_pro_id,
+                        root_exp_id=self._root_exp_id,
+                    )
+                },
+            )
+            for x_type in ("step", "timestamp")
+        ]
+
+        step_resp, time_resp = self._concurrent_request(requests)
+
+        step_list: List[Dict[str, Any]] = step_resp.data if step_resp.ok and isinstance(step_resp.data, list) else []
+        time_list: List[Dict[str, Any]] = time_resp.data if time_resp.ok and isinstance(time_resp.data, list) else []
+
+        merged: List[Dict[str, Any]] = []
+        for i in range(len(keys)):
+            entry: Dict[str, Any] = {}
+            for field in _SCALAR_STATISTIC_FIELDS:
+                step_val = step_list[i].get(field) if i < len(step_list) else None
+                time_val = time_list[i].get(field) if i < len(time_list) else None
+                if step_val is not None:
+                    stat = dict(step_val)
+                    if time_val is not None and time_val.get("index") is not None:
+                        stat["timestamp"] = time_val["index"]
+                    entry[field] = stat
+                elif time_val is not None:
+                    entry[field] = dict(time_val)
+            merged.append(entry)
+        return merged
+
+    def _fetch_scalars_range(self) -> Iterator[Metric]:
+        """CSV 全量下载 + 客户端 range_query 过滤（仅 SCALAR）。"""
+        assert self._range_query is not None
+        rq = self._range_query
+
+        # 1. 并发获取统计值（step + time）
+        value_list = self._fetch_value_stats_dual(self._keys, self._sample)
+
+        # 2. 逐 key 下载 CSV 并过滤
+        for i, key in enumerate(self._keys):
+            data: Dict[str, Any] = {
+                "projectId": self._project_id,
+                "experimentId": self._run_id,
+                "key": key,
+                "metrics": [],
+            }
+
+            # 获取 presigned URL
+            resp = self._get(f"/experiment/{self._run_id}/column/csv", params={"key": key})
+            if not resp.ok or not resp.data:
+                if i < len(value_list):
+                    data.update(value_list[i])
+                yield self._build_metric(key, data)
+                continue
+
+            url = _extract_csv_url(resp.data)
+            if not url:
+                if i < len(value_list):
+                    data.update(value_list[i])
+                yield self._build_metric(key, data)
+                continue
+
+            # 下载 CSV 并流式解析
+            rows = _stream_csv_rows(self._ctx.client, url, rq)
+            data["metrics"] = rows or []
+
+            if i < len(value_list):
+                data.update(value_list[i])
+            yield self._build_metric(key, data)
+
     def _fetch_scalars(self) -> Iterator[Metric]:
         payload = Metric._build_scalar_payload(
             self._project_id,
@@ -492,9 +646,8 @@ class Metrics(BaseEntity):
             scalar_resp.data if scalar_resp.ok and isinstance(scalar_resp.data, list) else []
         )
 
-        # 2. 获取统计值
-        value_resp = self._post("/house/metrics/scalar/value", data=payload)
-        value_list: List[Dict[str, Any]] = value_resp.ok and isinstance(value_resp.data, list) and value_resp.data or []
+        # 2. 并发获取统计值（step + time）
+        value_list = self._fetch_value_stats_dual(self._keys, self._sample)
 
         for i, key in enumerate(self._keys):
             data: Dict[str, Any] = {
@@ -506,42 +659,31 @@ class Metrics(BaseEntity):
             if i < len(scalar_list):
                 data["metrics"] = scalar_list[i].get("metrics", [])
             if i < len(value_list):
-                for field in _SCALAR_STATISTIC_FIELDS:
-                    val = value_list[i].get(field)
-                    if val is not None:
-                        data[field] = val
+                data.update(value_list[i])
             yield self._build_metric(key, data)
 
     def _fetch_scalars_all(self) -> Iterator[Metric]:
-        urls: Dict[str, str] = {}
+        csv_data: Dict[str, List[Dict[str, Any]]] = {}
         for key in self._keys:
             resp = self._get(f"/experiment/{self._run_id}/column/csv", params={"key": key})
             if resp.ok and resp.data:
-                urls[key] = _extract_csv_url(resp.data)
+                url = _extract_csv_url(resp.data)
+                if url:
+                    rows = _stream_csv_rows(self._ctx.client, url)
+                    csv_data[key] = rows or []
 
-        payload = Metric._build_scalar_payload(
-            self._project_id,
-            self._run_id,
-            self._keys,
-            self._sample,
-            root_pro_id=self._root_pro_id,
-            root_exp_id=self._root_exp_id,
-        )
-        value_resp = self._post("/house/metrics/scalar/value", data=payload)
-        value_list: List[Dict[str, Any]] = value_resp.ok and isinstance(value_resp.data, list) and value_resp.data or []
+        # 并发获取统计值（step + time）
+        value_list = self._fetch_value_stats_dual(self._keys, self._sample)
 
         for i, key in enumerate(self._keys):
             data: Dict[str, Any] = {
                 "projectId": self._project_id,
                 "experimentId": self._run_id,
                 "key": key,
-                "url": urls.get(key, ""),
+                "metrics": csv_data.get(key, []),
             }
             if i < len(value_list):
-                for field in _SCALAR_STATISTIC_FIELDS:
-                    val = value_list[i].get(field)
-                    if val is not None:
-                        data[field] = val
+                data.update(value_list[i])
             yield self._build_metric(key, data)
 
     def _fetch_medias(self) -> Iterator[Metric]:

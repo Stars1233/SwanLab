@@ -11,6 +11,7 @@ from swanlab.api.base import ApiClientContext, BaseEntity
 from swanlab.api.typings.common import PaginatedQuery
 from swanlab.api.typings.project import ApiProjectCountType, ApiProjectLabelType, ApiProjectType
 from swanlab.api.utils import get_properties
+from swanlab.sdk.internal.pkg import console
 
 
 class Project(BaseEntity):
@@ -112,9 +113,33 @@ class Project(BaseEntity):
         query = PaginatedQuery(page=page, size=size, all=all)
         return Experiments(self._ctx, path=self.path, query=query, mode="get")
 
-    def delete(self) -> bool:
-        """删除此项目。"""
+    def delete(self, commit: bool = False) -> bool:
+        """删除此项目。commit=False 时打印待删除信息，commit=True 时执行删除。"""
+        if not commit:
+            name = self.name
+            if self._errors:
+                return False
+            console.warning(f"Project to be deleted: project_id: {self.project_id} , name: {name}")
+            return True
         resp = self._delete(f"/project/{self.path}")
+        return resp.ok
+
+    def delete_runs(self, run_ids: List[str], commit: bool = False) -> bool:
+        """批量删除实验。commit=False 时打印待删除实验信息，commit=True 时执行删除。"""
+        requests = [(self._get, f"/project/{self.path}/runs/{run_id}", {}) for run_id in run_ids]
+        responses = self._concurrent_request(requests)
+
+        exps = []
+        for run_id, resp in zip(run_ids, responses):
+            data = resp.data if resp.ok and resp.data else {}
+            exps.append({"run_slug": run_id, "cuid": data.get("cuid", run_id), "name": data.get("name", run_id)})
+
+        if not commit:
+            lines = "\n".join([f"- run_id: {item['run_slug']}, name: {item['name']}" for item in exps])
+            console.warning(f"Experiments to be deleted:\n{lines}")
+            return True
+        data = {"cuids": [item.get("cuid") for item in exps]}
+        resp = self._post(f"/project/{self.path}/runs/del", data=data)
         return resp.ok
 
     def json(self) -> Dict[str, Any]:

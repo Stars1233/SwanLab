@@ -13,6 +13,7 @@ from swanlab.api.typings.common import (
     ApiColumnDataTypeLiteral,
     ApiMetricLogLevelLiteral,
     PaginatedQuery,
+    RangeQuery,
 )
 from swanlab.api.typings.experiment import (
     ApiExperimentLabelType,
@@ -22,12 +23,14 @@ from swanlab.api.typings.experiment import (
 from swanlab.api.typings.user import ApiUserType
 from swanlab.api.utils import (
     get_properties,
+    parse_timestamp_ms,
     resolve_run_path,
     validate_filter,
     validate_group,
     validate_sort,
     validate_update_active,
 )
+from swanlab.sdk.internal.pkg import console
 
 
 class Experiment(BaseEntity):
@@ -191,12 +194,35 @@ class Experiment(BaseEntity):
         self,
         keys: List[str],
         sample: int = 1500,
-        ignore_timestamp: bool = True,
+        ignore_timestamp: bool = False,
         all: bool = False,
+        range_query: Optional[Union[Dict[str, Any], RangeQuery]] = None,
     ) -> Dict[str, Any]:
+        """
+        Fetch scalar metrics for the given keys.
+
+        :param keys: Metric keys to fetch, e.g. ["loss", "acc"].
+        :param sample: Max number of sampled data points (default 1500). Ignored when ``all`` or ``range_query`` is set.
+        :param ignore_timestamp: If True, omit timestamp fields from the response.
+        :param all: If True, fetch full-resolution data without sampling limit.
+        :param range_query: Precise step(default)-range filter — accepts a ``RangeQuery`` object or a plain dict
+            with keys ``start``, ``end``, ``head``, ``tail``. Only supported for SCALAR metrics.
+            Example: ``{"type": "step", "start": 100, "end": 500}`` or ``{"tail": 50}``.
+            For timestamp-based filtering: ``{"type": "timestamp", "start": 1715769600000, "end": 1715773200000}``.
+            ``start``/``end`` accept int or str timestamps; values shorter than millisecond precision are auto-padded.
+        """
         run_id = self.run_id
         project_id = self.project_id
         from swanlab.api.metric import Metrics
+
+        if isinstance(range_query, dict):
+            if range_query.get("type") == "timestamp":
+                for key in ("start", "end"):
+                    if key in range_query and range_query[key] is not None:
+                        range_query[key] = parse_timestamp_ms(range_query[key])
+            rq = RangeQuery(**range_query)
+        else:
+            rq = range_query
 
         return Metrics(
             ctx=self._ctx,
@@ -207,6 +233,7 @@ class Experiment(BaseEntity):
             metric_type="SCALAR",
             ignore_timestamp=ignore_timestamp,
             all=all,
+            range_query=rq,
             root_pro_id=self.root_pro_id,
             root_exp_id=self.root_exp_id,
         ).json()
@@ -237,7 +264,7 @@ class Experiment(BaseEntity):
         self,
         offset: Optional[int] = 0,
         level: ApiMetricLogLevelLiteral = "INFO",
-        ignore_timestamp: bool = True,
+        ignore_timestamp: bool = False,
     ) -> Dict[str, Any]:
         run_id = self.run_id
         project_id = self.project_id
@@ -293,8 +320,14 @@ class Experiment(BaseEntity):
             root_exp_id=self.root_exp_id,
         )
 
-    def delete(self) -> bool:
-        """删除此实验。"""
+    def delete(self, commit: bool = False) -> bool:
+        """删除此实验。commit=False 时打印待删除信息，commit=True 时执行删除。"""
+        if not commit:
+            name = self.name
+            if self._errors:
+                return False
+            console.warning(f"Experiment to be deleted: run_id: {self._run_slug}, name: {name}")
+            return True
         resp = self._delete(f"/project/{self._proj_path}/runs/{self.run_id}")
         return resp.ok
 
